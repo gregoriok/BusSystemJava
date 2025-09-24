@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Mapa de Rastreamento de Ônibus (com Leaflet)</title>
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+          crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+            crossorigin=""></script>
+
+    <style>
+        body, html {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+        }
+        #controls {
+            padding: 10px;
+            background-color: #f2f2f2;
+            border-bottom: 1px solid #ccc;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        #map {
+            flex-grow: 1;
+            width: 100%;
+            background-color: #e5e3df;
+        }
+        #status {
+            font-weight: bold;
+        }
+        .status-connected { color: green; }
+        .status-disconnected { color: red; }
+    </style>
+</head>
+<body>
+
+<div id="controls">
+    <label for="busId">ID do Ônibus:</label>
+    <input type="text" id="busId" value="B-101">
+    <button onclick="connect()">Conectar</button>
+    <button onclick="disconnect()" disabled>Desconectar</button>
+    <span>Status: <span id="status" class="status-disconnected">Desconectado</span></span>
+</div>
+
+<div id="map"></div>
+
+<script>
+    let websocket;
+    let map;
+    let busMarker;
+    let busIcon; // Ícone personalizado para o ônibus
+    let busTrack = [];
+    let trackPolyline;
+
+    const busIdInput = document.getElementById('busId');
+    const connectButton = document.querySelector('button[onclick="connect()"]');
+    const disconnectButton = document.querySelector('button[onclick="disconnect()"]');
+    const statusSpan = document.getElementById('status');
+
+    // Função para inicializar o mapa com Leaflet
+    function initializeMap() {
+        // Coordenadas iniciais (ex: centro de uma cidade)
+        const initialPosition = [-28.4607, -54.6565]; // Leaflet usa [latitude, longitude]
+
+        // Cria o mapa e o anexa à div 'map'
+        map = L.map('map').setView(initialPosition, 15);
+
+        // Adiciona a camada de mapa do OpenStreetMap
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        // Cria um ícone personalizado (opcional)
+        busIcon = L.icon({
+            iconUrl: 'https://cdn-icons-png.flaticon.com/64/3448/3448339.png', // URL de um ícone de ônibus
+            iconSize: [48, 48], // Tamanho do ícone
+            iconAnchor: [24, 24], // Ponto do ícone que corresponde à localização do marcador
+        });
+    }
+
+    function connect() {
+        const busId = busIdInput.value;
+        if (!busId) {
+            alert('Por favor, insira um ID de ônibus.');
+            return;
+        }
+    
+        if (busMarker) {
+        map.removeLayer(busMarker);
+        busMarker = null;
+        }
+        if (trackPolyline) {
+            map.removeLayer(trackPolyline);
+            trackPolyline = null;
+        }
+        busTrack = [];
+
+        const wsUrl = `ws://localhost:8080/ws/bus/${busId}?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJCdXNTeXN0ZW0iLCJzdWIiOiJncmVnMUB0ZXN0ZS5jb20iLCJleHAiOjE3NTg2NzAzNjB9.-NqRmuwxVnqrDEGo-YN4qQDFz5Mv0Nwcd6hIULL1gv4`;
+        websocket = new WebSocket(wsUrl);
+
+        websocket.onopen = function(event) {
+            updateStatus('Conectado', true);
+        };
+
+        websocket.onmessage = function(event) {
+            try {
+                const locationData = JSON.parse(event.data);
+                if (locationData.latitude && locationData.longitude) {
+                    const newPosition = [
+                        parseFloat(locationData.latitude),
+                        parseFloat(locationData.longitude)
+                    ];
+                    updateMarker(newPosition);
+                }
+            } catch (e) {
+                console.error("Erro ao processar JSON:", e);
+            }
+        };
+
+        websocket.onclose = function(event) {
+            updateStatus('Desconectado', false);
+        };
+    }
+
+    function disconnect() {
+        if (websocket) {
+            websocket.close();
+        }
+    }
+
+    function updateMarker(position) {
+        busTrack.push(position);
+        if (!busMarker) {
+            // Cria o marcador com o ícone personalizado
+            busMarker = L.marker(position, { icon: busIcon }).addTo(map);
+        } else {
+            // Move o marcador existente
+            busMarker.setLatLng(position);
+        }
+
+        // Centraliza o mapa na nova posição
+        map.panTo(position);
+        if (busTrack.length > 1) { // Só desenha a linha se tivermos pelo menos 2 pontos
+            if (!trackPolyline) {
+                // Se a linha não existe, cria uma nova com todas as posições
+                trackPolyline = L.polyline(busTrack, {
+                    color: '#0033ff', // Cor da linha
+                    weight: 5,        // Espessura da linha
+                    opacity: 0.7      // Opacidade da linha
+                }).addTo(map);
+            } else {
+                // Se a linha já existe, apenas adiciona o novo ponto a ela
+                trackPolyline.addLatLng(position);
+            }
+        }
+    }
+
+    function updateStatus(statusText, isConnected) {
+        statusSpan.textContent = statusText;
+        statusSpan.className = isConnected ? 'status-connected' : 'status-disconnected';
+        connectButton.disabled = isConnected;
+        busIdInput.disabled = isConnected;
+        disconnectButton.disabled = !isConnected;
+    }
+
+    // Chama a inicialização do mapa assim que a página carrega
+    document.addEventListener('DOMContentLoaded', initializeMap);
+
+</script>
+</body>
+</html>
